@@ -3,9 +3,9 @@ import { useEffect, useRef, useState } from "react";
 const API_BASE = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
 
 const STARTER_PROMPTS = [
-  "Introduce yourself in one sentence.",
+  "Introduce yourself briefly.",
   "Help me plan my day.",
-  "Translate this conversation as we talk.",
+  "Talk with me in Urdu.",
 ];
 
 function apiUrl(path) {
@@ -27,20 +27,20 @@ function transcriptFromEvent(event) {
   return null;
 }
 
-function statusLabel(status) {
+function statusCopy(status) {
   switch (status) {
     case "connecting":
-      return "Connecting";
+      return { title: "Connecting", detail: "Starting a stable voice session." };
     case "listening":
-      return "Listening";
+      return { title: "Listening", detail: "Speak clearly. Background noise is ignored." };
     case "speaking":
-      return "Speaking";
+      return { title: "Speaking", detail: "Let the agent finish, then your turn starts." };
     case "connected":
-      return "Ready";
+      return { title: "Your turn", detail: "Talk now. The agent waits until you finish." };
     case "error":
-      return "Error";
+      return { title: "Something broke", detail: "End the call and start again." };
     default:
-      return "Idle";
+      return { title: "Ready when you are", detail: "Works on phone, tablet, and desktop." };
   }
 }
 
@@ -57,6 +57,9 @@ export default function App() {
   const streamRef = useRef(null);
   const audioRef = useRef(null);
   const logEndRef = useRef(null);
+  const mutedRef = useRef(false);
+  const speakingRef = useRef(false);
+  const eventHandlerRef = useRef(() => {});
 
   useEffect(() => {
     fetch(apiUrl("/api/health"))
@@ -69,6 +72,19 @@ export default function App() {
     logEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  function applyMicGate() {
+    const track = streamRef.current?.getAudioTracks()[0];
+    if (!track) return;
+    track.enabled = !mutedRef.current && !speakingRef.current;
+  }
+
+  function setAgentSpeaking(isSpeaking) {
+    if (speakingRef.current === isSpeaking) return;
+    speakingRef.current = isSpeaking;
+    applyMicGate();
+    setStatus(isSpeaking ? "speaking" : "connected");
+  }
+
   function pushMessage(role, text) {
     const trimmed = (text || "").trim();
     if (!trimmed) return;
@@ -79,27 +95,27 @@ export default function App() {
   }
 
   function handleRealtimeEvent(event) {
-    if (event.type === "input_audio_buffer.speech_started") {
+    if (event.type === "input_audio_buffer.speech_started" && !speakingRef.current) {
       setStatus("listening");
     }
 
-    if (event.type === "input_audio_buffer.speech_stopped") {
+    if (event.type === "input_audio_buffer.speech_stopped" && !speakingRef.current) {
       setStatus("connected");
     }
 
     if (
-      event.type === "response.output_audio.delta" ||
       event.type === "output_audio_buffer.started" ||
+      event.type === "response.output_audio.delta" ||
       event.type === "response.audio.delta"
     ) {
-      setStatus("speaking");
+      setAgentSpeaking(true);
     }
 
     if (
       event.type === "response.done" ||
       event.type === "output_audio_buffer.stopped"
     ) {
-      setStatus("connected");
+      setAgentSpeaking(false);
     }
 
     const transcript = transcriptFromEvent(event);
@@ -113,36 +129,68 @@ export default function App() {
     }
   }
 
+  eventHandlerRef.current = handleRealtimeEvent;
+
   async function startCall() {
     setError("");
+    setMessages([]);
     setStatus("connecting");
+    mutedRef.current = false;
+    speakingRef.current = false;
+    setMuted(false);
 
     try {
-      const pc = new RTCPeerConnection();
+      const pc = new RTCPeerConnection({
+        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+      });
       pcRef.current = pc;
 
       const audioEl = audioRef.current;
-      pc.ontrack = (event) => {
-        if (audioEl) {
-          audioEl.srcObject = event.streams[0];
+      if (audioEl) {
+        audioEl.autoplay = true;
+        audioEl.playsInline = true;
+        audioEl.setAttribute("playsinline", "true");
+      }
+
+      pc.ontrack = async (event) => {
+        if (!audioEl) return;
+        audioEl.srcObject = event.streams[0];
+        try {
+          await audioEl.play();
+        } catch {
+          // iOS sometimes needs the original tap; Start talking already counts.
         }
       };
 
       const localStream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
+          channelCount: 1,
+          echoCancellation: { ideal: true },
+          noiseSuppression: { ideal: true },
+          autoGainControl: { ideal: true },
         },
+        video: false,
       });
       streamRef.current = localStream;
+
+      const micTrack = localStream.getAudioTracks()[0];
+      if (micTrack?.applyConstraints) {
+        await micTrack
+          .applyConstraints({
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          })
+          .catch(() => {});
+      }
       localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
+      applyMicGate();
 
       const dc = pc.createDataChannel("oai-events");
       dcRef.current = dc;
       dc.addEventListener("message", (message) => {
         try {
-          handleRealtimeEvent(JSON.parse(message.data));
+          eventHandlerRef.current(JSON.parse(message.data));
         } catch {
           // ignore non-JSON events
         }
@@ -170,10 +218,13 @@ export default function App() {
         } catch {
           // keep raw body
         }
-        throw new Error(message);
+        throw new Error(typeof message === "string" ? message : "Session failed");
       }
 
       await pc.setRemoteDescription({ type: "answer", sdp: answerBody });
+      if (audioEl) {
+        await audioEl.play().catch(() => {});
+      }
       setStatus("connected");
     } catch (err) {
       closeMedia();
@@ -189,6 +240,8 @@ export default function App() {
     dcRef.current = null;
     pcRef.current = null;
     streamRef.current = null;
+    speakingRef.current = false;
+    mutedRef.current = false;
     if (audioRef.current) {
       audioRef.current.srcObject = null;
     }
@@ -201,10 +254,9 @@ export default function App() {
   }
 
   function toggleMute() {
-    const track = streamRef.current?.getAudioTracks()[0];
-    if (!track) return;
-    track.enabled = !track.enabled;
-    setMuted(!track.enabled);
+    mutedRef.current = !mutedRef.current;
+    setMuted(mutedRef.current);
+    applyMicGate();
   }
 
   function sendText(text) {
@@ -227,32 +279,37 @@ export default function App() {
   }
 
   const live = status !== "idle" && status !== "error";
+  const copy = statusCopy(status);
 
   return (
     <div className="page">
-      <div className="orb-bg" />
+      <div className="glow glow-a" />
+      <div className="glow glow-b" />
+
       <header className="topbar">
-        <div>
-          <p className="eyebrow">OpenAI Realtime</p>
-          <h1>Speech-to-speech voice agent</h1>
+        <div className="brand">
+          <span className="logo" aria-hidden="true" />
+          <div>
+            <p className="eyebrow">Realtime voice</p>
+            <h1>Talk naturally. No cut-offs.</h1>
+          </div>
         </div>
         <div className={`health ${health?.hasApiKey ? "ok" : "warn"}`}>
-          {health?.hasApiKey ? "Server key ready" : "Add OPENAI_API_KEY in server/.env"}
+          <i />
+          {health?.hasApiKey ? "Live backend" : "Key missing"}
         </div>
       </header>
 
       <main className="layout">
         <section className="stage">
-          <div className={`orb ${status}`}>
+          <div className={`orb ${status}`} aria-hidden="true">
+            <div className="orb-core" />
             <span />
             <span />
             <span />
           </div>
-          <p className="status">{statusLabel(status)}</p>
-          <p className="hint">
-            Mic audio goes to the Node server, then OpenAI Realtime. Your API key never
-            leaves the server.
-          </p>
+          <p className="status">{copy.title}</p>
+          <p className="hint">{copy.detail}</p>
 
           <div className="controls">
             {live ? (
@@ -265,7 +322,7 @@ export default function App() {
               </button>
             )}
             <button className="btn ghost" onClick={toggleMute} disabled={!live}>
-              {muted ? "Unmute" : "Mute"}
+              {muted ? "Unmute mic" : "Mute mic"}
             </button>
           </div>
 
@@ -286,10 +343,16 @@ export default function App() {
         </section>
 
         <section className="transcript">
-          <h2>Live transcript</h2>
+          <div className="transcript-head">
+            <h2>Transcript</h2>
+            <span>{messages.length} lines</span>
+          </div>
           <div className="log">
             {messages.length === 0 ? (
-              <p className="empty">Start a call, then speak. Transcripts appear here.</p>
+              <p className="empty">
+                Start a call, then speak. The agent waits for a full sentence before
+                answering.
+              </p>
             ) : (
               messages.map((message) => (
                 <article key={message.id} className={`bubble ${message.role}`}>
@@ -310,17 +373,19 @@ export default function App() {
             <input
               value={textInput}
               onChange={(event) => setTextInput(event.target.value)}
-              placeholder={live ? "Type if you prefer not to speak" : "Start a call first"}
+              placeholder={live ? "Type a message" : "Start a call first"}
               disabled={!live}
+              enterKeyHint="send"
+              autoComplete="off"
             />
-            <button className="btn primary" type="submit" disabled={!live}>
+            <button className="btn primary send" type="submit" disabled={!live}>
               Send
             </button>
           </form>
         </section>
       </main>
 
-      <audio ref={audioRef} autoPlay />
+      <audio ref={audioRef} autoPlay playsInline />
     </div>
   );
 }

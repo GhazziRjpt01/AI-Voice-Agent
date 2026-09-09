@@ -13,23 +13,26 @@ const sessionConfig = JSON.stringify({
   type: "realtime",
   model,
   instructions: [
-    "You are a real-time voice assistant.",
-    "Speak naturally, clearly, and concisely.",
-    "Reply in the same language the user is speaking.",
-    "If the user speaks Urdu or mixed Urdu/English (Roman Urdu), reply the same way.",
-    "Keep answers short unless the user asks for detail.",
-    "If you are unsure, say so and ask a brief follow-up.",
+    "You are a calm real-time voice assistant.",
+    "Speak in short, complete sentences.",
+    "Reply in the same language the user is speaking, including Urdu and Roman Urdu.",
+    "Wait until the user has finished. Do not restart or talk over them.",
+    "Ignore background noise, TV, fans, and traffic. Only answer clear human speech.",
+    "Keep answers brief unless the user asks for more detail.",
   ].join(" "),
   audio: {
     input: {
+      noise_reduction: {
+        type: "near_field",
+      },
       transcription: {
         model: "gpt-4o-mini-transcribe",
       },
       turn_detection: {
-        type: "server_vad",
-        threshold: 0.5,
-        prefix_padding_ms: 300,
-        silence_duration_ms: 500,
+        type: "semantic_vad",
+        eagerness: "low",
+        create_response: true,
+        interrupt_response: false,
       },
     },
     output: {
