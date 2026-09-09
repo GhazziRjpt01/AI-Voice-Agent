@@ -38,11 +38,33 @@ const sessionConfig = JSON.stringify({
   },
 });
 
+const extraOrigins = (process.env.FRONTEND_ORIGIN || "")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+const allowedOrigins = [
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  "https://ai-voice-agent-frontend-dun.vercel.app",
+  ...extraOrigins,
+];
+
 const app = express();
 
 app.use(
   cors({
-    origin: ["http://localhost:5173", "http://127.0.0.1:5173"],
+    origin(origin, callback) {
+      if (
+        !origin ||
+        allowedOrigins.includes(origin) ||
+        origin.endsWith(".vercel.app")
+      ) {
+        callback(null, true);
+        return;
+      }
+      callback(new Error("Not allowed by CORS"));
+    },
   })
 );
 app.use(express.text({ type: ["application/sdp", "text/plain"] }));
@@ -98,9 +120,13 @@ app.post("/api/session", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Voice agent server on http://localhost:${PORT}`);
-  if (!apiKey) {
-    console.warn("OPENAI_API_KEY is not set. Copy server/.env.example to server/.env");
-  }
-});
+if (!process.env.VERCEL) {
+  app.listen(PORT, () => {
+    console.log(`Voice agent server on http://localhost:${PORT}`);
+    if (!apiKey) {
+      console.warn("OPENAI_API_KEY is not set. Copy server/.env.example to server/.env");
+    }
+  });
+}
+
+export default app;

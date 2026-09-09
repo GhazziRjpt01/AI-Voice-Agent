@@ -1,10 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 
+const API_BASE = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
+
 const STARTER_PROMPTS = [
   "Introduce yourself in one sentence.",
   "Help me plan my day.",
   "Translate this conversation as we talk.",
 ];
+
+function apiUrl(path) {
+  return `${API_BASE}${path}`;
+}
 
 function transcriptFromEvent(event) {
   if (event.type === "conversation.item.input_audio_transcription.completed") {
@@ -53,7 +59,7 @@ export default function App() {
   const logEndRef = useRef(null);
 
   useEffect(() => {
-    fetch("/api/health")
+    fetch(apiUrl("/api/health"))
       .then((res) => res.json())
       .then(setHealth)
       .catch(() => setHealth({ ok: false, hasApiKey: false }));
@@ -145,7 +151,7 @@ export default function App() {
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
-      const sdpResponse = await fetch("/api/session", {
+      const sdpResponse = await fetch(apiUrl("/api/session"), {
         method: "POST",
         headers: { "Content-Type": "application/sdp" },
         body: offer.sdp,
